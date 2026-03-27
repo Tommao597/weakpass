@@ -22,5 +22,5 @@ async def generate_smart_dict_api(data: SmartDictRequest):
     return {
         "filename": filename,
         "count": len(passwords),
-        "download": f"/api/dict/download/{filename}"
+        "download": f"/api/dict/download/{filename}",
     }

@@ -1,38 +1,28 @@
 import asyncio
+from typing import Iterable, List
 
 
 async def scan_port(host: str, port: int, timeout: int = 2) -> bool:
-    """
-    扫描单个端口
-    """
     try:
-        conn = await asyncio.wait_for(
+        reader, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port),
-            timeout=timeout
+            timeout=timeout,
         )
-
-        conn[1].close()
+        writer.close()
+        await writer.wait_closed()
         return True
-
-    except:
+    except (
+        asyncio.TimeoutError,
+        ConnectionRefusedError,
+        OSError,
+    ):
         return False
 
 
-async def scan_ports(host: str, ports: list):
-    """
-    扫描多个端口
-    """
-    tasks = []
-
-    for port in ports:
-        tasks.append(scan_port(host, port))
-
-    results = await asyncio.gather(*tasks)
-
-    open_ports = []
-
-    for port, result in zip(ports, results):
-        if result:
-            open_ports.append(port)
-
-    return open_ports
+async def scan_ports(host: str, ports: Iterable[int], timeout: int = 2) -> List[int]:
+    port_list = list(dict.fromkeys(int(port) for port in ports))
+    results = await asyncio.gather(
+        *(scan_port(host, port, timeout=timeout) for port in port_list),
+        return_exceptions=False,
+    )
+    return [port for port, is_open in zip(port_list, results) if is_open]

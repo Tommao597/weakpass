@@ -1,209 +1,169 @@
 import json
+import logging
 import os
-from typing import List, Dict, Optional
+import re
+import uuid
 from datetime import datetime
-DICT_PATH = "app/data/dictionaries"
+from pathlib import Path
+from typing import Dict, List, Optional
 
+BASE_DIR = Path(__file__).resolve().parents[2]
+DICT_PATH = BASE_DIR / "data" / "dictionaries"
+SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
+
+logger = logging.getLogger(__name__)
+
+
+def sanitize_filename(name: Optional[str], default: str = "smart_dict") -> str:
+    raw_name = (name or "").strip()
+    safe_name = SAFE_FILENAME_PATTERN.sub("_", raw_name).strip("._-")
+    return safe_name[:64] or default
+
+
+def get_generated_dict_path(filename: str) -> Optional[Path]:
+    candidate = DICT_PATH / Path(filename).name
+
+    if candidate.name != filename or candidate.suffix.lower() != ".txt":
+        return None
+
+    resolved = candidate.resolve()
+    base_dir = DICT_PATH.resolve()
+    if base_dir not in resolved.parents:
+        return None
+
+    return resolved
 
 
 class DictManager:
-
-    def __init__(self, dict_path="./data/dictionaries"):
-
-        self.dict_path = dict_path
-
-        os.makedirs(dict_path, exist_ok=True)
-
+    def __init__(self, dict_path: Optional[str] = None):
+        self.dict_path = Path(dict_path) if dict_path else DICT_PATH
+        self.dict_path.mkdir(parents=True, exist_ok=True)
         self.dictionaries = self._load_all()
 
-    # ==============================
-    # 加载所有字典
-    # ==============================
-
     def _load_all(self) -> Dict:
-
-        dicts = {}
+        dictionaries = {}
 
         for file in os.listdir(self.dict_path):
-
             if not file.endswith(".json"):
                 continue
 
-            path = os.path.join(self.dict_path, file)
+            path = self.dict_path / file
 
             try:
-
                 with open(path, "r", encoding="utf-8") as f:
-
                     data = json.load(f)
-
                     if "id" in data:
-                        dicts[data["id"]] = data
+                        dictionaries[data["id"]] = data
+            except Exception as exc:
+                logger.warning("Failed to load dictionary %s: %s", file, exc)
 
-            except Exception as e:
-
-                print(f"字典加载失败: {file} - {e}")
-
-        return dicts
-
-    # ==============================
-    # 创建字典
-    # ==============================
+        return dictionaries
 
     def create_dict(
         self,
         name: str,
         description: str,
         passwords: List[str],
-        tags: List[str]
+        tags: List[str],
     ) -> Dict:
-
-        dict_id = f"dict_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-
-        passwords = list(set(passwords))
+        dict_id = f"dict_{uuid.uuid4().hex}"
+        normalized_passwords = list(
+            dict.fromkeys(password.strip() for password in passwords if password.strip())
+        )
+        normalized_tags = list(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))
 
         new_dict = {
             "id": dict_id,
             "name": name,
             "description": description,
-            "passwords": passwords,
-            "tags": tags,
+            "passwords": normalized_passwords,
+            "tags": normalized_tags,
             "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat()
+            "updated_at": datetime.now().isoformat(),
         }
 
-        path = os.path.join(self.dict_path, f"{dict_id}.json")
-
+        path = self.dict_path / f"{dict_id}.json"
         with open(path, "w", encoding="utf-8") as f:
             json.dump(new_dict, f, indent=2, ensure_ascii=False)
 
         self.dictionaries[dict_id] = new_dict
-
         return new_dict
 
-    # ==============================
-    # 获取字典
-    # ==============================
-
     def get_dict(self, dict_id: str) -> Optional[Dict]:
-
         return self.dictionaries.get(dict_id)
 
-    # ==============================
-    # 获取所有字典
-    # ==============================
-
     def get_all_dicts(self) -> List[Dict]:
-
         return list(self.dictionaries.values())
 
-    # ==============================
-    # 获取密码列表（新增）
-    # ==============================
-
     def get_passwords(self, dict_id: str) -> List[str]:
-
         dictionary = self.get_dict(dict_id)
-
         if not dictionary:
             return []
 
         return dictionary.get("passwords", [])
 
-    # ==============================
-    # 批量导入密码（新增）
-    # ==============================
-
     def import_passwords(
         self,
         dict_id: str,
-        passwords: List[str]
+        passwords: List[str],
     ) -> Optional[Dict]:
-
         dictionary = self.get_dict(dict_id)
-
         if not dictionary:
             return None
 
-        current_passwords = set(dictionary["passwords"])
-
-        current_passwords.update(passwords)
-
-        dictionary["passwords"] = list(current_passwords)
-
+        current_passwords = list(dictionary["passwords"])
+        current_passwords.extend(password.strip() for password in passwords if password.strip())
+        dictionary["passwords"] = list(dict.fromkeys(current_passwords))
         dictionary["updated_at"] = datetime.now().isoformat()
 
-        path = os.path.join(self.dict_path, f"{dict_id}.json")
-
+        path = self.dict_path / f"{dict_id}.json"
         with open(path, "w", encoding="utf-8") as f:
             json.dump(dictionary, f, indent=2, ensure_ascii=False)
 
         return dictionary
 
-    # ==============================
-    # 更新字典
-    # ==============================
-
     def update_dict(
         self,
         dict_id: str,
-        data: Dict
+        data: Dict,
     ) -> Optional[Dict]:
-
         if dict_id not in self.dictionaries:
             return None
 
         self.dictionaries[dict_id].update(data)
-
         self.dictionaries[dict_id]["updated_at"] = datetime.now().isoformat()
 
-        path = os.path.join(self.dict_path, f"{dict_id}.json")
-
+        path = self.dict_path / f"{dict_id}.json"
         with open(path, "w", encoding="utf-8") as f:
             json.dump(self.dictionaries[dict_id], f, indent=2, ensure_ascii=False)
 
         return self.dictionaries[dict_id]
 
-    # ==============================
-    # 删除字典
-    # ==============================
-
     def delete_dict(self, dict_id: str) -> bool:
-
         if dict_id not in self.dictionaries:
             return False
 
-        path = os.path.join(self.dict_path, f"{dict_id}.json")
-
+        path = self.dict_path / f"{dict_id}.json"
         try:
-
             if os.path.exists(path):
                 os.remove(path)
-
-        except Exception as e:
-
-            print(f"删除字典失败: {e}")
-
+        except Exception as exc:
+            logger.warning("Failed to delete dictionary %s: %s", dict_id, exc)
             return False
 
         del self.dictionaries[dict_id]
-
         return True
-    
-def save_generated_dict(name, passwords):
 
-    if not os.path.exists(DICT_PATH):
-        os.makedirs(DICT_PATH)
 
-    filename = f"{name}_smart.txt"
-    path = os.path.join(DICT_PATH, filename)
+def save_generated_dict(name: Optional[str], passwords: List[str]) -> str:
+    DICT_PATH.mkdir(parents=True, exist_ok=True)
+
+    safe_name = sanitize_filename(name)
+    filename = f"{safe_name}_smart.txt"
+    path = DICT_PATH / filename
 
     with open(path, "w", encoding="utf-8") as f:
-        for pwd in passwords:
+        for pwd in dict.fromkeys(password for password in passwords if password):
             f.write(pwd + "\n")
 
     return filename
-
-
-
-

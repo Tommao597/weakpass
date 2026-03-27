@@ -1,354 +1,479 @@
 import asyncio
+import logging
 import uuid
 from datetime import datetime
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+from app.core.detector.ftp_detector import FTPAttacker
 from app.core.detector.http_detector import (
     HTTPAttacker,
-    WordPressAttacker,
+    JenkinsAttacker,
     TomcatAttacker,
-    JenkinsAttacker
+    WordPressAttacker,
 )
-
-from app.core.detector.ssh_detector import SSHAttacker
 from app.core.detector.mysql_detector import MySQLAttacker
 from app.core.detector.rdp_detector import RDPAttacker
-from app.core.detector.ftp_detector import FTPAttacker
-from app.core.detector.smb_detector import SMBDetector
-from app.core.detector.telnet_detector import TelnetAttacker
 from app.core.detector.redis_detector import RedisAttacker
-
+from app.core.detector.smb_detector import SMBDetector
+from app.core.detector.ssh_detector import SSHAttacker
+from app.core.detector.telnet_detector import TelnetAttacker
+from app.core.dict.dict_manager import DictManager
+from app.models.schemas import DetectConfig
 from app.utils.port_scan import scan_ports
 from app.utils.ports import DEFAULT_PORTS
 
-from app.models.schemas import DetectConfig
+logger = logging.getLogger(__name__)
 
 
 class DetectTaskManager:
-
     def __init__(self):
-
         self.tasks = {}
-
-        # 并发控制
-        self.semaphore = asyncio.Semaphore(200)
-
-        # 成功账号缓存 (host,port,username)
-        self.success_accounts = set()
-        # 结果去重
-        self.result_set = set()
-
-        # 协议攻击器
-        self.attackers = {
-            "ssh": SSHAttacker(),
-            "mysql": MySQLAttacker(),
-            "http": HTTPAttacker(),
-            "https": HTTPAttacker(),
-            "wordpress": WordPressAttacker(),
-            "tomcat": TomcatAttacker(),
-            "jenkins": JenkinsAttacker(),
-            "rdp": RDPAttacker(),
-            "ftp": FTPAttacker(),
-            "smb": SMBDetector(),
-            "telnet": TelnetAttacker(),
-            "redis": RedisAttacker()
+        self.dict_manager = DictManager()
+        self.attacker_factories = {
+            "ssh": SSHAttacker,
+            "mysql": MySQLAttacker,
+            "http": HTTPAttacker,
+            "https": HTTPAttacker,
+            "wordpress": WordPressAttacker,
+            "tomcat": TomcatAttacker,
+            "jenkins": JenkinsAttacker,
+            "rdp": RDPAttacker,
+            "ftp": FTPAttacker,
+            "smb": SMBDetector,
+            "telnet": TelnetAttacker,
+            "redis": RedisAttacker,
         }
 
-        # 端口 → 协议映射
-        self.port_protocol_map = {
-            22: "ssh",
-            21: "ftp",
-            23: "telnet",
-            445: "smb",
-            3306: "mysql",
-            6379: "redis",
-            3389: "rdp",
-            80: "http",
-            443: "https",
-            8080: "tomcat",
-            
-        }
-        def _format_result(
-            self,
-            target,
-            port,
-            protocol,
-            username,
-            password,
-            success,
-            message="",
-            info=None
+    def _format_result(
+        self,
+        target,
+        port,
+        protocol,
+        username,
+        password,
+        success,
+        message="",
+        info=None,
     ):
+        return {
+            "target": target,
+            "port": port,
+            "protocol": protocol,
+            "username": username,
+            "password": password,
+            "success": success,
+            "status": "weak" if success else "fail",
+            "message": message,
+            "info": info or {},
+        }
 
-            return {
-                 "target": target,
-                 "port": port,
-                 "protocol": protocol,
-                 "username": username,
-                 "password": password,
-                 "success": success,
-                 "status": "weak" if success else "fail",
-                 "message": message,
-                 "info": info or {}
-       }
+    def _protocol_names(self, protocols: Iterable) -> List[str]:
+        return [
+            protocol.value if hasattr(protocol, "value") else str(protocol)
+            for protocol in protocols
+        ]
+
+    def _build_attackers(self, timeout: int) -> Dict[str, object]:
+        attackers = {}
+        for protocol, factory in self.attacker_factories.items():
+            attackers[protocol] = factory(timeout=timeout)
+        return attackers
+
+    def _build_protocol_ports(self, config: DetectConfig) -> Dict[str, List[int]]:
+        protocol_ports: Dict[str, List[int]] = {}
+        configured_ports = config.ports or {}
+
+        for protocol_name in self._protocol_names(config.protocols):
+            if protocol_name in configured_ports and configured_ports[protocol_name]:
+                ports = configured_ports[protocol_name]
+            else:
+                ports = DEFAULT_PORTS.get(protocol_name, [])
+
+            protocol_ports[protocol_name] = list(
+                dict.fromkeys(int(port) for port in ports)
+            )
+
+        return protocol_ports
+
+    def _build_port_list(self, protocol_ports: Dict[str, List[int]]) -> List[int]:
+        return sorted(
+            {
+                port
+                for ports in protocol_ports.values()
+                for port in ports
+            }
+        )
+
+    def _protocols_for_port(
+        self,
+        port: int,
+        protocol_ports: Dict[str, List[int]],
+    ) -> List[str]:
+        return [
+            protocol
+            for protocol, ports in protocol_ports.items()
+            if port in ports
+        ]
+
+    def _infer_web_transport(self, protocol: str, port: int) -> str:
+        if protocol == "https" or port in {443, 8443}:
+            return "https"
+        return "http"
+
+    def _update_progress(self, task_id: str, increment: int = 1):
+        task = self.tasks.get(task_id)
+        if not task:
+            return
+
+        task["progress"] += increment
+        total = task["total"]
+        task["percent"] = int((task["progress"] / total) * 100) if total else 0
+
+    def _reduce_total(self, task_id: str, decrement: int):
+        task = self.tasks.get(task_id)
+        if not task or decrement <= 0:
+            return
+
+        task["total"] = max(task["progress"], task["total"] - decrement)
+        total = task["total"]
+        task["percent"] = int((task["progress"] / total) * 100) if total else 0
 
     def get(self, task_id: str):
         return self.tasks.get(task_id)
 
-    def add(self, task_id: str, config: DetectConfig):
-
-        pause_event = asyncio.Event()
-        pause_event.set()  # 默认运行
-
-        self.tasks[task_id] = {
-            "task_id": task_id,
-            "status": "pending",
-
-            "pause_event": pause_event, 
-
-            "progress": 0,
-            "total": 0,
-            "percent": 0,
-
-            "current_target": None,
-            "current_user": None,
-            "current_password": None,
-
-            "result": [],
-            "statistics": {},
-
-            "start_time": datetime.now().isoformat(),
-            "completed_at": None,
-
-            "config": config
-        }
-
-    async def _detect_once(
-    self,
-    task_id,
-    attacker,
-    protocol,
-    target,
-    port,
-    username,
-    password
-):
-
-     async with self.semaphore:
-         # ⭐新增：任务状态检查
+    def serialize_task(self, task_id: str):
         task = self.tasks.get(task_id)
         if not task:
             return None
 
-        # 如果任务停止
-        if task["status"] == "stopped":
-            return None
+        return {
+            "task_id": task["task_id"],
+            "status": task["status"],
+            "progress": task["progress"],
+            "total": task["total"],
+            "percent": task["percent"],
+            "current_target": task.get("current_target"),
+            "current_user": task.get("current_user"),
+            "current_password": task.get("current_password"),
+            "result": task.get("result", []),
+            "statistics": task.get("statistics", {}),
+            "start_time": task.get("start_time"),
+            "completed_at": task.get("completed_at"),
+            "config": task["config"].model_dump(),
+        }
 
-        # 如果暂停就等待
+    def list_serialized_tasks(self):
+        return [self.serialize_task(task_id) for task_id in self.tasks]
+
+    def add(self, task_id: str, config: DetectConfig):
+        pause_event = asyncio.Event()
+        pause_event.set()
+
+        self.tasks[task_id] = {
+            "task_id": task_id,
+            "status": "pending",
+            "pause_event": pause_event,
+            "progress": 0,
+            "total": 0,
+            "percent": 0,
+            "current_target": None,
+            "current_user": None,
+            "current_password": None,
+            "result": [],
+            "statistics": {},
+            "start_time": datetime.now().isoformat(),
+            "completed_at": None,
+            "config": config,
+        }
+
+    async def _detect_once(
+        self,
+        task_id: str,
+        attacker,
+        protocol: str,
+        target: str,
+        port: int,
+        username: str,
+        password: str,
+    ) -> Tuple[Optional[Dict], bool]:
+        task = self.tasks.get(task_id)
+        if not task or task["status"] == "stopped":
+            return None, False
+
         await task["pause_event"].wait()
 
+        task = self.tasks.get(task_id)
+        if not task or task["status"] == "stopped":
+            return None, False
+
+        task["current_target"] = target
+        task["current_user"] = username
+        task["current_password"] = password
+
         try:
-
-            # HTTP / HTTPS
-            if protocol in ["http", "https"]:
-
+            if protocol in {"http", "https"}:
                 for auth_type in ["basic", "form", "digest"]:
-
                     try:
-
                         success, message, info = await attacker.attack(
                             host=target,
                             port=port,
                             username=username,
                             password=password,
                             protocol=protocol,
-                            auth_type=auth_type
+                            auth_type=auth_type,
+                        )
+                        if success:
+                            return (
+                                self._format_result(
+                                    target,
+                                    port,
+                                    f"{protocol}({auth_type})",
+                                    username,
+                                    password,
+                                    True,
+                                    message,
+                                    info,
+                                ),
+                                True,
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "HTTP detection error %s:%s via %s: %s",
+                            target,
+                            port,
+                            auth_type,
+                            exc,
                         )
 
-                        if success:
-                            return self._format_result(
-                                target,
-                                port,
-                                f"{protocol}({auth_type})",
-                                username,
-                                password,
-                                True,
-                                message,
-                                info
-                            )
+                return None, True
 
-                    except Exception as e:
-                        print(f"HTTP检测错误 {target}:{port} {e}")
-
-                # HTTP三种认证都失败
-                return None
-
-            # 其他协议
-            else:
-
-                success, message = await attacker.attack(
-                    target,
-                    port,
-                    username,
-                    password
+            if protocol in {"wordpress", "tomcat", "jenkins"}:
+                success, message, info = await attacker.attack(
+                    host=target,
+                    port=port,
+                    username=username,
+                    password=password,
+                    protocol=self._infer_web_transport(protocol, port),
                 )
-
                 if success:
-                    return self._format_result(
+                    return (
+                        self._format_result(
+                            target,
+                            port,
+                            protocol,
+                            username,
+                            password,
+                            True,
+                            message,
+                            info,
+                        ),
+                        True,
+                    )
+                return None, True
+
+            success, message = await attacker.attack(
+                target,
+                port,
+                username,
+                password,
+            )
+
+            if success:
+                return (
+                    self._format_result(
                         target,
                         port,
                         protocol,
                         username,
                         password,
                         True,
-                        message
-                    )
+                        message,
+                    ),
+                    True,
+                )
 
-        except Exception as e:
-
-            print(
-                f"检测错误: {target}:{port} "
-                f"{username}:{password} - {str(e)}"
+        except Exception as exc:
+            logger.warning(
+                "Detection error %s:%s %s:%s - %s",
+                target,
+                port,
+                username,
+                password,
+                exc,
             )
+
+        return None, True
+
+    async def _detect_account(
+        self,
+        task_id: str,
+        attacker,
+        protocol: str,
+        target: str,
+        port: int,
+        username: str,
+        passwords: Sequence[str],
+    ) -> Optional[Dict]:
+        for index, password in enumerate(passwords):
+            task = self.tasks.get(task_id)
+            if not task or task["status"] == "stopped":
+                self._reduce_total(task_id, len(passwords) - index)
+                return None
+
+            result, attempted = await self._detect_once(
+                task_id,
+                attacker,
+                protocol,
+                target,
+                port,
+                username,
+                password,
+            )
+
+            if not attempted:
+                self._reduce_total(task_id, len(passwords) - index)
+                return None
+
+            self._update_progress(task_id)
+
+            if result:
+                self._reduce_total(task_id, len(passwords) - index - 1)
+                return result
 
         return None
 
-    async def run_detection(self, task_id: str, config: DetectConfig):
+    def _store_result(
+        self,
+        result: Optional[Dict],
+        results: List[Dict],
+        result_set: Set[Tuple[str, int, str, str]],
+    ):
+        if not result:
+            return
 
+        result_key = (
+            result["target"],
+            result["port"],
+            result["username"],
+            result["password"],
+        )
+        if result_key in result_set:
+            return
+
+        result_set.add(result_key)
+        results.append(result)
+
+    async def run_detection(self, task_id: str, config: DetectConfig):
         if task_id not in self.tasks:
             self.add(task_id, config)
 
-        self.tasks[task_id]["status"] = "running"
+        task = self.tasks[task_id]
+        task["status"] = "running"
+        task["result"] = []
+        task["statistics"] = {}
+        task["completed_at"] = None
+        task["progress"] = 0
+        task["total"] = 0
+        task["percent"] = 0
 
-        results = []
+        results: List[Dict] = []
+        result_set: Set[Tuple[str, int, str, str]] = set()
+        running_tasks: Set[asyncio.Task] = set()
+        attackers = self._build_attackers(config.timeout)
 
         try:
-
             passwords = await self._get_passwords(config.dict_id)
-
             if not passwords:
                 passwords = ["123456", "admin", "password"]
 
-            tasks_list = []
+            protocol_ports = self._build_protocol_ports(config)
+            ports = self._build_port_list(protocol_ports)
+            if not ports:
+                task["status"] = "completed"
+                task["percent"] = 100
+                task["completed_at"] = datetime.now().isoformat()
+                return
 
             for target in config.targets:
+                if task["status"] == "stopped":
+                    break
 
-                # 1 扫描端口
-                ports = list(DEFAULT_PORTS.values())
-
-                open_ports = await scan_ports(target, ports)
-
+                open_ports = await scan_ports(target, ports, timeout=config.timeout)
                 if not open_ports:
                     continue
 
-                # 2 根据端口识别协议
                 for port in open_ports:
+                    protocols = self._protocols_for_port(port, protocol_ports)
+                    for protocol in protocols:
+                        attacker = attackers.get(protocol)
+                        if not attacker:
+                            continue
 
-                    protocol = self.port_protocol_map.get(port)
-
-                    if not protocol:
-                        continue
-
-                    if protocol not in config.protocols:
-                        continue
-
-                    attacker = self.attackers.get(protocol)
-
-                    if not attacker:
-                        continue
-
-                    for username in config.usernames:
-
-                        if self.tasks[task_id]["status"] == "stopped":
-                            break
-
-                        key = (target, port, username)
-
-                        # 如果这个账号已经成功就跳过
-                        if key in self.success_accounts:
-                            continue    
-
-                        for password in passwords:
-                            if self.tasks[task_id]["status"] == "stopped":
+                        for username in config.usernames:
+                            if task["status"] == "stopped":
                                 break
 
-                            self.tasks[task_id]["current_target"] = target
-                            self.tasks[task_id]["current_user"] = username
-                            self.tasks[task_id]["current_password"] = password
-
-                            task = asyncio.create_task(
-
-                                self._detect_once(
-                                    task_id,
-                                    attacker,
-                                    protocol,
-                                    target,
-                                    port,
-                                    username,
-                                    password
+                            task["total"] += len(passwords)
+                            running_tasks.add(
+                                asyncio.create_task(
+                                    self._detect_account(
+                                        task_id=task_id,
+                                        attacker=attacker,
+                                        protocol=protocol,
+                                        target=target,
+                                        port=port,
+                                        username=username,
+                                        passwords=passwords,
+                                    )
                                 )
-
                             )
 
-                            tasks_list.append(task)
+                            if len(running_tasks) >= config.thread_count:
+                                done, pending = await asyncio.wait(
+                                    running_tasks,
+                                    return_when=asyncio.FIRST_COMPLETED,
+                                )
+                                running_tasks = set(pending)
 
-            total = len(tasks_list)
+                                for future in done:
+                                    self._store_result(
+                                        future.result(),
+                                        results,
+                                        result_set,
+                                    )
 
-            self.tasks[task_id]["total"] = total
+            while running_tasks:
+                done, pending = await asyncio.wait(
+                    running_tasks,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                running_tasks = set(pending)
 
-            completed = 0
-
-            for future in asyncio.as_completed(tasks_list):
-
-                result = await future
-
-                completed += 1
-
-                self.tasks[task_id]["progress"] = completed
-
-                percent = int((completed / total) * 100) if total else 0
-
-                self.tasks[task_id]["percent"] = percent
-
-                if result:
-
-                    key = (
-                        result["target"],
-                        result["port"],
-                        result["username"],
-                        result["password"]
+                for future in done:
+                    self._store_result(
+                        future.result(),
+                        results,
+                        result_set,
                     )
 
-                    # 如果已经存在就跳过
-                    if key in self.result_set:
-                        continue
+            if task["status"] != "stopped":
+                task["status"] = "completed"
+                task["percent"] = 100
 
-                    self.result_set.add(key)
+            task["result"] = results
+            task["statistics"] = self._generate_statistics(results)
+            task["completed_at"] = datetime.now().isoformat()
 
-                    results.append(result)
+        except Exception as exc:
+            for future in running_tasks:
+                future.cancel()
 
-                    # 成功账号记录
-                    self.success_accounts.add(
-                        (result["target"], result["port"], result["username"])
-                    )
-
-            self.tasks[task_id]["status"] = "completed"
-
-            self.tasks[task_id]["result"] = results
-
-            self.tasks[task_id]["statistics"] = self._generate_statistics(results)
-
-            self.tasks[task_id]["completed_at"] = datetime.now().isoformat()
-
-        except Exception as e:
-
-            self.tasks[task_id]["status"] = "failed"
-
-            self.tasks[task_id]["result"] = [{"error": str(e)}]
-
-            print(f"任务 {task_id} 执行失败: {e}")
+            task["status"] = "failed"
+            task["result"] = [{"error": str(exc)}]
+            task["completed_at"] = datetime.now().isoformat()
+            logger.exception("Task %s failed: %s", task_id, exc)
 
     def _generate_statistics(self, results):
-
         stats = {
             "total": len(results),
             "by_protocol": {},
@@ -356,108 +481,85 @@ class DetectTaskManager:
             "risk_level": {
                 "high": 0,
                 "medium": 0,
-                "low": 0
-            }
+                "low": 0,
+            },
         }
 
         for result in results:
-
             if "error" in result:
                 continue
 
             protocol = result["protocol"]
+            target = result["target"]
 
             stats["by_protocol"][protocol] = (
                 stats["by_protocol"].get(protocol, 0) + 1
             )
+            stats["by_target"][target] = stats["by_target"].get(target, 0) + 1
 
-            target = result["target"]
-
-            stats["by_target"][target] = (
-                stats["by_target"].get(target, 0) + 1
-            )
-
-            if (
-                "admin" in result["username"].lower()
-                or "root" in result["username"].lower()
-            ):
+            username = result["username"].lower()
+            if "admin" in username or "root" in username:
                 stats["risk_level"]["high"] += 1
-
             elif len(result["password"]) < 8:
                 stats["risk_level"]["medium"] += 1
-
             else:
                 stats["risk_level"]["low"] += 1
 
         return stats
 
     async def _get_passwords(self, dict_id: str):
+        if dict_id:
+            passwords = self.dict_manager.get_passwords(dict_id)
+            if passwords:
+                return passwords
 
         return [
             "123456",
             "admin",
             "password",
             "root",
-            "12345678"
+            "12345678",
         ]
+
     def pause_task(self, task_id: str):
-
         task = self.tasks.get(task_id)
-
         if not task:
             return False
 
         task["status"] = "paused"
-
         task["pause_event"].clear()
-
         return True
+
     def resume_task(self, task_id: str):
-
         task = self.tasks.get(task_id)
-
         if not task:
             return False
 
         task["status"] = "running"
-
         task["pause_event"].set()
-
         return True
-    
+
     def stop_task(self, task_id: str):
-
         task = self.tasks.get(task_id)
-
         if not task:
             return False
 
         task["status"] = "stopped"
-
         task["pause_event"].set()
-
         return True
-    
 
 
 tasks = DetectTaskManager()
 
 
 async def create_detect_task(config: DetectConfig):
-
     task_id = str(uuid.uuid4())
-
     tasks.add(task_id, config)
-
-    asyncio.create_task(tasks.run_detection(task_id, config))
-
     return task_id
 
 
 def get_task_status(task_id: str):
-
     task = tasks.get(task_id)
-
     if not task:
         return {"status": "not_found"}
 
@@ -466,18 +568,15 @@ def get_task_status(task_id: str):
         "status": task["status"],
         "progress": task["progress"],
         "percent": task["percent"],
-        "completed_at": task["completed_at"]
+        "completed_at": task["completed_at"],
     }
 
 
 async def execute_detection(task_id: str, config: DetectConfig):
-
     try:
-
         await tasks.run_detection(task_id, config)
-
-    except Exception as e:
-
-        tasks.tasks[task_id]["status"] = "failed"
-
-        print(f"任务 {task_id} 执行失败: {e}")
+    except Exception as exc:
+        if task_id in tasks.tasks:
+            tasks.tasks[task_id]["status"] = "failed"
+            tasks.tasks[task_id]["completed_at"] = datetime.now().isoformat()
+        logger.exception("Task %s failed: %s", task_id, exc)
