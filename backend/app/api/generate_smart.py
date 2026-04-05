@@ -17,10 +17,11 @@ async def generate_smart_dict_api(data: SmartDictRequest):
         data.company
     )
 
+    # 生成字典
     filename = save_generated_dict(data.name, passwords)
 
     return {
         "filename": filename,
         "count": len(passwords),
-        "download": f"/api/dict/download/{filename}",
+        "download": f"/api/dict/download/{filename}"
     }

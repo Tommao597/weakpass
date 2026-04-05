@@ -159,7 +159,11 @@ def save_generated_dict(name: Optional[str], passwords: List[str]) -> str:
     DICT_PATH.mkdir(parents=True, exist_ok=True)
 
     safe_name = sanitize_filename(name)
-    filename = f"{safe_name}_smart.txt"
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    filename = f"{safe_name}_smart_{timestamp}.txt"
+
     path = DICT_PATH / filename
 
     with open(path, "w", encoding="utf-8") as f:
@@ -167,3 +171,20 @@ def save_generated_dict(name: Optional[str], passwords: List[str]) -> str:
             f.write(pwd + "\n")
 
     return filename
+
+
+
+def add_generated_dict(self, filename: str):
+
+    source_path = get_generated_dict_path(filename)
+
+    target_path = DICT_PATH / filename
+
+    if not source_path.exists():
+        raise FileNotFoundError("生成字典不存在")
+
+    # 复制到字典库
+    import shutil
+    shutil.copy(source_path, target_path)
+
+    return target_path

@@ -1,6 +1,7 @@
 from enum import Enum
 from typing import Dict, List, Optional
-
+from typing import Optional
+from pydantic import BaseModel
 from pydantic import BaseModel, Field
 
 
@@ -44,3 +45,17 @@ class DetectTask(BaseModel):
     progress: float
     result: Optional[Dict] = None
     created_at: str
+
+
+class PasswordDictRequest(BaseModel):
+
+    name: Optional[str] = None
+    birthday: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    company: Optional[str] = None
+
+    use_rule: bool = True
+    use_ai: bool = False
+
+    limit: int = 500

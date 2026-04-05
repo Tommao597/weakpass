@@ -1,0 +1,5 @@
+{
+  "name": "弱口令检测系统",
+  "description": "一个功能强大的弱口令检测与管理平台，支持多协议检测、智能字典生成及详细报告导出。",
+  "requestFramePermissions": []
+}

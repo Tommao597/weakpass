@@ -3,8 +3,10 @@ import logging
 import uuid
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
-
+from app.core.fingerprint.fingerprint_engine import detect_http_fingerprint
 from app.core.detector.ftp_detector import FTPAttacker
+
+
 from app.core.detector.http_detector import (
     HTTPAttacker,
     JenkinsAttacker,
@@ -405,7 +407,19 @@ class DetectTaskManager:
                 for port in open_ports:
                     protocols = self._protocols_for_port(port, protocol_ports)
                     for protocol in protocols:
+                        if protocol in ["http", "https"]:
+                            fingerprint = await detect_http_fingerprint(
+                                target,
+                                port,
+                                protocol
+                            )
+
+                            if fingerprint:
+                                protocol = fingerprint
                         attacker = attackers.get(protocol)
+
+
+
                         if not attacker:
                             continue
 
