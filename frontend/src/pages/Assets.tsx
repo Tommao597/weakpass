@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Search, Globe, Server, Shield, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { assetApi } from '../api';
 import { toast } from 'sonner';
@@ -7,6 +7,30 @@ export const Assets = () => {
   const [target, setTarget] = useState('');
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<any | null>(null);
+
+  const assetRows = useMemo(() => {
+    if (!results) return [];
+
+    const rawRows = Array.isArray(results.assets)
+      ? results.assets
+      : Array.isArray(results.ports)
+      ? results.ports
+      : [];
+
+    return rawRows.map((item: any) => ({
+      port: item.port,
+      protocol: item.protocol || item.fingerprint || item.service || 'unknown',
+      service: item.service || item.fingerprint || 'unknown',
+      version: item.version || item.banner || item.fingerprint || '未知',
+    }));
+  }, [results]);
+
+  const vulnerabilityCount = useMemo(() => {
+    if (!results) return 0;
+    if (Array.isArray(results.vulnerabilities)) return results.vulnerabilities.length;
+    if (typeof results.vulnerability_count === 'number') return results.vulnerability_count;
+    return 0;
+  }, [results]);
 
   const handleScan = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -19,7 +43,7 @@ export const Assets = () => {
       setResults(res.data);
       toast.success('资产扫描完成');
     } catch (err: any) {
-      toast.error(err.response?.data?.detail?.[0]?.msg || '扫描失败');
+      toast.error(err.response?.data?.detail?.[0]?.msg || err.response?.data?.detail || '扫描失败');
     } finally {
       setLoading(false);
     }
@@ -29,22 +53,22 @@ export const Assets = () => {
     <div className="space-y-8">
       <div>
         <h2 className="text-3xl font-bold">资产识别</h2>
-        <p className="text-muted-foreground mt-1">自动发现并识别目标系统的开放端口、服务及操作系统信息</p>
+        <p className="text-muted-foreground mt-1">识别目标主机的开放端口、服务信息和基础指纹</p>
       </div>
 
       <div className="bg-card border border-border rounded-2xl p-8 shadow-xl max-w-3xl mx-auto">
         <form onSubmit={handleScan} className="flex gap-4">
           <div className="flex-1 relative">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" size={20} />
-            <input 
+            <input
               type="text"
               value={target}
               onChange={e => setTarget(e.target.value)}
-              placeholder="输入 IP 地址、域名或网段 (如: 192.168.1.1, example.com)"
+              placeholder="输入 IP、域名或网段，例如 192.168.1.1 或 example.com"
               className="w-full bg-muted border border-border rounded-xl pl-12 pr-4 py-4 focus:ring-2 focus:ring-primary outline-none transition-all"
             />
           </div>
-          <button 
+          <button
             type="submit"
             disabled={loading}
             className="bg-primary hover:opacity-90 disabled:opacity-50 text-primary-foreground font-bold px-8 rounded-xl transition-all shadow-lg shadow-primary/20 flex items-center gap-2"
@@ -87,7 +111,7 @@ export const Assets = () => {
                 <h3 className="font-bold">开放端口</h3>
               </div>
               <div className="text-2xl font-bold text-indigo-500">
-                {results.ports?.length || 0} <span className="text-sm font-normal text-muted-foreground">个活跃端口</span>
+                {assetRows.length} <span className="text-sm font-normal text-muted-foreground">个活跃端口</span>
               </div>
             </div>
 
@@ -99,7 +123,7 @@ export const Assets = () => {
                 <h3 className="font-bold">风险评估</h3>
               </div>
               <div className="text-2xl font-bold text-red-500">
-                {results.vulnerabilities?.length || 0} <span className="text-sm font-normal text-muted-foreground">个潜在风险</span>
+                {vulnerabilityCount} <span className="text-sm font-normal text-muted-foreground">个潜在风险</span>
               </div>
             </div>
           </div>
@@ -115,23 +139,23 @@ export const Assets = () => {
                     <th className="px-6 py-4 font-medium">端口</th>
                     <th className="px-6 py-4 font-medium">协议</th>
                     <th className="px-6 py-4 font-medium">服务</th>
-                    <th className="px-6 py-4 font-medium">版本</th>
+                    <th className="px-6 py-4 font-medium">指纹/版本</th>
                     <th className="px-6 py-4 font-medium">状态</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {results.ports?.map((port: any, idx: number) => (
+                  {assetRows.map((row: any, idx: number) => (
                     <tr key={idx} className="hover:bg-muted/30 transition-colors">
-                      <td className="px-6 py-4 font-mono font-bold text-primary">{port.port}</td>
-                      <td className="px-6 py-4 text-sm uppercase">{port.protocol}</td>
-                      <td className="px-6 py-4 text-sm font-medium">{port.service}</td>
-                      <td className="px-6 py-4 text-sm text-muted-foreground">{port.version || '未知'}</td>
+                      <td className="px-6 py-4 font-mono font-bold text-primary">{row.port}</td>
+                      <td className="px-6 py-4 text-sm uppercase">{row.protocol}</td>
+                      <td className="px-6 py-4 text-sm font-medium">{row.service}</td>
+                      <td className="px-6 py-4 text-sm text-muted-foreground">{row.version}</td>
                       <td className="px-6 py-4">
                         <span className="px-2 py-1 bg-green-500/10 text-green-500 rounded-full text-[10px] font-bold uppercase">Open</span>
                       </td>
                     </tr>
                   ))}
-                  {(!results.ports || results.ports.length === 0) && (
+                  {assetRows.length === 0 && (
                     <tr>
                       <td colSpan={5} className="px-6 py-10 text-center text-muted-foreground">
                         未发现开放端口
@@ -148,7 +172,7 @@ export const Assets = () => {
       {!results && !loading && (
         <div className="py-20 text-center bg-card/30 border border-dashed border-border rounded-2xl max-w-3xl mx-auto">
           <AlertCircle className="mx-auto text-muted-foreground/30 mb-4" size={48} />
-          <p className="text-muted-foreground">输入目标并点击扫描以开始资产识别</p>
+          <p className="text-muted-foreground">输入目标并开始扫描，以查看资产识别结果</p>
         </div>
       )}
     </div>

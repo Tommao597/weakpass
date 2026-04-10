@@ -1,5 +1,4 @@
 import axios from 'axios';
-import request from './request'
 
 const api = axios.create({
   baseURL: (import.meta as any).env?.VITE_API_URL || '/',
@@ -108,10 +107,10 @@ export const dictApi = {
     api.get(`/api/dict/dicts/${dictId}/preview`),
 
   saveGeneratedDict(filename: string) {
-  return request.post('/api/dict/dicts/save_generated', null, {
-    params: { filename }
-  })
-}
+    return api.post('/api/dict/dicts/save_generated', null, {
+      params: { filename }
+    });
+  }
 
 
 };

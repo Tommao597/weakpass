@@ -1,14 +1,22 @@
 def merge_password_dict(rule_dict, ai_dict, limit=2000):
-    """
-    合并规则字典 + AI字典
-    """
+    ai_limit = int(limit * 0.3)
+    rule_limit = limit - ai_limit
 
-    result = set()
+    result = []
+    seen = set()
 
-    if rule_dict:
-        result.update(rule_dict)
-
+    # AI部分
     if ai_dict:
-        result.update(ai_dict)
+        for pwd in ai_dict[:ai_limit]:
+            if pwd not in seen:
+                result.append(pwd)
+                seen.add(pwd)
 
-    return list(result)[:limit]
+    # 规则部分
+    if rule_dict:
+        for pwd in rule_dict[:rule_limit]:
+            if pwd not in seen:
+                result.append(pwd)
+                seen.add(pwd)
+
+    return result

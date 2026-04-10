@@ -16,6 +16,7 @@ import { detectorApi, dictApi } from '../api';
 import { toast } from 'sonner';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { normalizeTasks } from '../utils/task';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -37,6 +38,15 @@ const ProtocolBadge = ({ protocol }: { protocol: string; key?: string }) => {
 };
 
 export const Detector = () => {
+  const protocolOptions = [
+    { value: 'ssh', label: 'SSH' },
+    { value: 'ftp', label: 'FTP' },
+    { value: 'mysql', label: 'MYSQL' },
+    { value: 'redis', label: 'REDIS' },
+    { value: 'rdp', label: 'RDP (不可用)', disabled: true },
+    { value: 'telnet', label: 'TELNET' },
+    { value: 'smb', label: 'SMB' },
+  ];
   const [tasks, setTasks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
@@ -55,7 +65,7 @@ export const Detector = () => {
     try {
       const res = await detectorApi.listTasks();
       const data = Array.isArray(res.data) ? res.data : (res.data?.tasks || []);
-      setTasks(data);
+      setTasks(normalizeTasks(data));
     } catch (err) {
       toast.error('获取任务列表失败');
     } finally {
@@ -84,7 +94,7 @@ export const Detector = () => {
       const config = {
         targets: formData.targets.split(',').map(t => t.trim()),
         usernames: formData.usernames.split(',').map(u => u.trim()),
-        protocols: formData.protocols,
+        protocols: formData.protocols.filter(p => p !== 'rdp'),
         thread_count: formData.threads,
         timeout: formData.timeout,
         dict_id: formData.dict_id || null
@@ -280,24 +290,29 @@ export const Detector = () => {
               <div>
                 <label className="block text-sm font-medium text-muted-foreground mb-1.5">检测协议</label>
                 <div className="flex flex-wrap gap-2">
-                  {['ssh', 'ftp', 'mysql', 'redis', 'rdp', 'telnet', 'smb'].map(p => (
+                  {protocolOptions.map((option) => (
                     <button
-                      key={p}
+                      key={option.value}
                       type="button"
+                      disabled={option.disabled}
                       onClick={() => {
-                        const newProtocols = formData.protocols.includes(p)
-                          ? formData.protocols.filter(item => item !== p)
-                          : [...formData.protocols, p];
+                        if (option.disabled) return;
+                        const newProtocols = formData.protocols.includes(option.value)
+                          ? formData.protocols.filter(item => item !== option.value)
+                          : [...formData.protocols, option.value];
                         setFormData({...formData, protocols: newProtocols});
                       }}
+                      title={option.disabled ? '后端当前不支持 RDP 检测' : option.label}
                       className={cn(
                         "px-3 py-1.5 rounded-lg text-sm font-medium border transition-all",
-                        formData.protocols.includes(p)
+                        option.disabled
+                          ? "bg-muted/50 border-border text-muted-foreground/50 cursor-not-allowed"
+                          : formData.protocols.includes(option.value)
                           ? "bg-primary border-primary text-primary-foreground"
                           : "bg-muted border-border text-muted-foreground hover:border-primary/50"
                       )}
                     >
-                      {p.toUpperCase()}
+                      {option.label}
                     </button>
                   ))}
                 </div>

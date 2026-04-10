@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from app.models.schemas import PasswordDictRequest
-from app.core.ai.password_dict_generator import generate_smart_dict
+from app.utils.smart_dict_generator import generate_smart_dict
 from app.core.ai.ai_password_generator import generate_ai_passwords
 from app.core.password.dict_merger import merge_password_dict
 from app.core.dict.dict_manager import save_generated_dict  # 添加导入

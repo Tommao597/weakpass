@@ -56,6 +56,6 @@ class PasswordDictRequest(BaseModel):
     company: Optional[str] = None
 
     use_rule: bool = True
-    use_ai: bool = False
+    use_ai: bool = True
 
     limit: int = 500
