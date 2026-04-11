@@ -55,6 +55,12 @@ export const assetApi = {
   scanAssets: (target: string) =>
     api.post('/api/asset/assets/scan', null, { params: { target } }),
 
+  getAssetScans: () =>
+    api.get('/api/asset/assets/scans'),
+
+  getAssetScanById: (scanId: number) =>
+    api.get(`/api/asset/assets/scans/${scanId}`),
+
 };
 
 

@@ -49,6 +49,11 @@ export const Dashboard = () => {
   });
 
   const fetchData = async () => {
+    // 只在第一次加载时显示加载状态，后续刷新不显示
+    if (loading) {
+      setLoading(false);
+    }
+    
     try {
       const [tasksRes, dictsRes] = await Promise.all([
         detectorApi.listTasks(),
@@ -76,7 +81,10 @@ export const Dashboard = () => {
       });
     } catch (err) {
       console.error('Failed to fetch dashboard stats:', err);
-      toast.error('获取系统概况失败');
+      // 只在第一次加载失败时显示错误提示，后续刷新失败不显示，避免频繁弹窗
+      if (loading) {
+        toast.error('获取系统概况失败');
+      }
     } finally {
       setLoading(false);
     }
@@ -84,6 +92,8 @@ export const Dashboard = () => {
 
   useEffect(() => {
     fetchData();
+    const timer = setInterval(fetchData, 5000);
+    return () => clearInterval(timer);
   }, []);
 
   if (loading) {

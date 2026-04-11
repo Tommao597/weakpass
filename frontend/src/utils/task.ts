@@ -13,8 +13,20 @@ export const getTaskId = (task: TaskRecord): string =>
   String(task?.id ?? task?.task_id ?? '');
 
 export const normalizeTask = (task: TaskRecord) => {
+  // 处理后端返回的target（字符串）转换为targets（数组）
   const targets = toArray(task?.targets ?? task?.config?.targets).map(String);
+  if (!targets.length && task?.target) {
+    // 如果没有targets但有target字段，将其按逗号分割为数组
+    targets.push(...task.target.split(',').map((t: string) => t.trim()));
+  }
+  
+  // 处理后端返回的protocol（字符串）转换为protocols（数组）
   const protocols = toArray(task?.protocols ?? task?.config?.protocols).map(String);
+  if (!protocols.length && task?.protocol) {
+    // 如果没有protocols但有protocol字段，将其按逗号分割为数组
+    protocols.push(...task.protocol.split(',').map((p: string) => p.trim()));
+  }
+  
   const result = toArray(task?.result);
   const statistics = task?.statistics ?? {};
   const progress =

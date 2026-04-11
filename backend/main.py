@@ -7,6 +7,7 @@ from app.api.report import router as report_router
 from app.api.password_dict import router as password_router
 from app.api.generate_smart import router as generate_smart_dict_router
 from app.api.asset_routes import router as asset_router
+from app.core.database import db  # 导入数据库实例
 
 import uvicorn
 
@@ -20,6 +21,8 @@ app.add_middleware(
         "http://localhost:5173",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
+        "http://127.0.0.1:8000", 
+        "*" 
     ],
     allow_credentials=True,
     allow_methods=["*"],

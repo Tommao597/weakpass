@@ -87,15 +87,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
             {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
           </button>
           
-          <div className="flex items-center gap-4 ml-auto">
-            <div className="text-right hidden sm:block">
-              <p className="text-sm font-medium">管理员</p>
-              <p className="text-xs text-muted-foreground">a2744242580@gmail.com</p>
-            </div>
-            <div className="w-10 h-10 rounded-full bg-muted border border-border flex items-center justify-center overflow-hidden">
-              <img src="https://picsum.photos/seed/admin/100/100" alt="Avatar" referrerPolicy="no-referrer" />
-            </div>
-          </div>
+
         </header>
 
         <div className="p-6 lg:p-10 max-w-7xl mx-auto w-full">

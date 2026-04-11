@@ -16,6 +16,7 @@ from openpyxl.styles import Font, Alignment
 from openpyxl.utils.dataframe import dataframe_to_rows
 
 from app.core.tasks import tasks
+from app.core.database import task_dao, result_dao  # 导入数据库DAO
 
 router = APIRouter()
 
@@ -40,22 +41,33 @@ def format_results(results):
 @router.get("/export/{task_id}/pdf")
 async def export_pdf(task_id: str):
 
-    task_list = tasks.list_serialized_tasks()
-
-    task = next(
-        (t for t in task_list
-         if t.get("task_id") == task_id or t.get("task_id", "").startswith(task_id)),
-        None
-    )
-
-    if not task:
+    # 从数据库获取任务信息
+    db_task = task_dao.get_task_by_id(task_id)
+    
+    if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    if task.get("status") not in ["completed", "success"]:
+    # 将sqlite3.Row对象转换为字典
+    db_task_dict = dict(db_task) if db_task else {}
+    
+    if db_task_dict.get("status") not in ["completed", "success"]:
         raise HTTPException(status_code=400, detail="Task not completed")
 
-    results = task.get("result") or task.get("results") or []
-    formatted = format_results(results)
+    # 从数据库获取检测结果
+    results = result_dao.get_results_by_task(task_id)
+    
+    # 转换结果格式以匹配报告生成需求
+    formatted_results = []
+    for result in results:
+        formatted_results.append({
+            "target": result["target"],
+            "protocol": result["protocol"],
+            "username": result["username"],
+            "password": result["password"],
+            "status": "weak" if result["success"] else "fail",
+        })
+    
+    formatted = format_results(formatted_results)
 
     # ======================
     # 📊 Statistics
@@ -102,7 +114,7 @@ async def export_pdf(task_id: str):
 
         elements.append(Paragraph(f"Task ID: {task_id}", styles["Normal"]))
         elements.append(Paragraph(f"Scan Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["Normal"]))
-        elements.append(Paragraph(f"Status: {task.get('status')}", styles["Normal"]))
+        elements.append(Paragraph(f"Status: {db_task_dict.get('status')}", styles["Normal"]))
         elements.append(Spacer(1, 12))
 
         # ======================
@@ -183,33 +195,50 @@ async def export_pdf(task_id: str):
         # ======================
         doc.build(elements)
 
+        headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
         return FileResponse(
             tmp.name,
             media_type="application/pdf",
             filename=f"weak_password_report_{task_id}.pdf",
             background=BackgroundTask(os.unlink, tmp.name),
+            headers=headers,
         )
 
 
 @router.get("/export/{task_id}/excel")
 async def export_excel(task_id: str):
 
-    task_list = tasks.list_serialized_tasks()
-
-    task = next(
-        (t for t in task_list
-         if t.get("task_id") == task_id or t.get("task_id", "").startswith(task_id)),
-        None
-    )
-
-    if not task:
+    # 从数据库获取任务信息
+    db_task = task_dao.get_task_by_id(task_id)
+    
+    if not db_task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
-    if task.get("status") not in ["completed", "success"]:
+    # 将sqlite3.Row对象转换为字典
+    db_task_dict = dict(db_task) if db_task else {}
+    
+    if db_task_dict.get("status") not in ["completed", "success"]:
         raise HTTPException(status_code=400, detail="任务尚未完成")
 
-    results = task.get("result") or task.get("results") or []
-    formatted = format_results(results)
+    # 从数据库获取检测结果
+    results = result_dao.get_results_by_task(task_id)
+    
+    # 转换结果格式以匹配报告生成需求
+    formatted_results = []
+    for result in results:
+        formatted_results.append({
+            "target": result["target"],
+            "protocol": result["protocol"],
+            "username": result["username"],
+            "password": result["password"],
+            "status": "weak" if result["success"] else "fail",
+        })
+    
+    formatted = format_results(formatted_results)
 
     # ======================
     # 📊 统计信息
@@ -244,7 +273,7 @@ async def export_excel(task_id: str):
         summary_data = [
             ["任务ID", task_id],
             ["扫描时间", datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
-            ["任务状态", task.get("status")],
+            ["任务状态", db_task_dict.get("status")],
             [],
             ["总目标数", total],
             ["弱口令数量", weak_count],
@@ -317,9 +346,15 @@ async def export_excel(task_id: str):
         # ======================
         wb.save(tmp.name)
 
+        headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
         return FileResponse(
             tmp.name,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             filename=f"弱口令检测报告_{task_id}.xlsx",
             background=BackgroundTask(os.unlink, tmp.name),
+            headers=headers,
         )

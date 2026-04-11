@@ -20,6 +20,7 @@ from app.core.detector.smb_detector import SMBDetector
 from app.core.detector.ssh_detector import SSHAttacker
 from app.core.detector.telnet_detector import TelnetAttacker
 from app.core.dict.dict_manager import DictManager
+from app.core.database import task_dao, result_dao  # 导入数据库DAO
 from app.models.schemas import DetectConfig
 from app.utils.port_scan import scan_ports
 from app.utils.ports import DEFAULT_PORTS
@@ -45,6 +46,42 @@ class DetectTaskManager:
             "telnet": TelnetAttacker,
             "redis": RedisAttacker,
         }
+        
+        # 从数据库加载历史任务
+        self._load_history_tasks()
+    
+    def _load_history_tasks(self):
+        """从数据库加载历史任务到内存"""
+        try:
+            db_tasks = task_dao.get_all_tasks()
+            for db_task in db_tasks:
+                # 只加载非完成状态的任务到内存
+                if db_task.get('status') in ['running', 'pending', 'paused']:
+                    task_id = db_task['id']
+                    self.tasks[task_id] = {
+                        "task_id": task_id,
+                        "status": db_task['status'],
+                        "pause_event": asyncio.Event(),
+                        "progress": db_task.get('progress', 0),
+                        "total": 0,
+                        "percent": db_task.get('progress', 0),
+                        "current_target": None,
+                        "current_user": None,
+                        "current_password": None,
+                        "result": [],
+                        "statistics": {},
+                        "start_time": db_task.get('created_at'),
+                        "completed_at": db_task.get('updated_at'),
+                        "config": None,  # 无法从数据库恢复配置
+                    }
+                    # 设置暂停事件状态
+                    if db_task['status'] == 'paused':
+                        self.tasks[task_id]['pause_event'].clear()
+                    else:
+                        self.tasks[task_id]['pause_event'].set()
+            logger.info(f"从数据库加载了 {len(self.tasks)} 个历史任务")
+        except Exception as e:
+            logger.error(f"加载历史任务失败: {e}")
 
     def _format_result(
         self,
@@ -171,6 +208,19 @@ class DetectTaskManager:
         pause_event = asyncio.Event()
         pause_event.set()
 
+        # 创建数据库任务记录
+        task_data = {
+            'id': task_id,
+            'name': f"检测任务-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+            'target': ",".join(config.targets),
+            'protocol': ",".join([p.value if hasattr(p, 'value') else str(p) for p in config.protocols]),
+            'dict_id': config.dict_id,
+            'status': 'pending',
+            'progress': 0
+        }
+        task_dao.create_task(task_data)
+
+        # 保留内存缓存用于实时状态更新
         self.tasks[task_id] = {
             "task_id": task_id,
             "status": "pending",
@@ -473,10 +523,28 @@ class DetectTaskManager:
             if task["status"] != "stopped":
                 task["status"] = "completed"
                 task["percent"] = 100
+                # 更新数据库任务状态
+                task_dao.update_task_status(task_id, "completed", 100)
 
             task["result"] = results
             task["statistics"] = self._generate_statistics(results)
             task["completed_at"] = datetime.now().isoformat()
+            
+            # 保存所有结果到数据库
+            for result in results:
+                if result.get('success'):
+                    # 计算风险等级
+                    risk_level = 'low'
+                    username = result.get('username', '').lower()
+                    password = result.get('password', '')
+                    
+                    if 'admin' in username or 'root' in username:
+                        risk_level = 'high'
+                    elif len(password) < 8:
+                        risk_level = 'medium'
+                    
+                    result['risk_level'] = risk_level
+                    result_dao.save_result(task_id, result)
 
         except Exception as exc:
             for future in running_tasks:
@@ -485,6 +553,8 @@ class DetectTaskManager:
             task["status"] = "failed"
             task["result"] = [{"error": str(exc)}]
             task["completed_at"] = datetime.now().isoformat()
+            # 更新数据库任务状态
+            task_dao.update_task_status(task_id, "failed")
             logger.exception("Task %s failed: %s", task_id, exc)
 
     def _generate_statistics(self, results):
